@@ -97,6 +97,7 @@ Edit the constants at the top of `venus_bms_bridge.py`:
 | `DEVICE_INSTANCE` | `512` | Venus device instance |
 | `CUSTOM_NAME` | `"48V314AH"` | Name shown in the GUI |
 | `POLL_INTERVAL_S` | `2` | Seconds between poll cycles |
+| `LOG_LEVEL` | `0` | `0`=quiet (errors/disconnects only), `1`=info, `2`=verbose |
 
 Cell count and remaining capacity are taken from the BMS when available.
 
@@ -121,6 +122,20 @@ In Remote Console the battery should appear under device list (e.g. custom name 
 
 ---
 
+## Logging
+
+Default `LOG_LEVEL = 0` keeps the log almost empty during normal operation.
+
+| Level | What is written |
+|-------|-----------------|
+| `0` (default) | Connect failures, disconnects, watchdog, adapter reset, BMS problem codes |
+| `1` | Plus startup, successful connect, device info |
+| `2` | Plus every telemetry line, CRC noise, auth details |
+
+```sh
+tail -F /data/log/venus_bms_bridge.log
+```
+
 ## Safety notes
 
 - The **hardware BMS** remains the primary protection layer.
@@ -139,6 +154,17 @@ In Remote Console the battery should appear under device list (e.g. custom name 
 
 ---
 
-## License
+## Disclaimer / liability
 
-Use and modify at your own risk. Not affiliated with Victron Energy or Humsienk.
+**Use at your own risk.**
+
+This software is provided “as is”, without warranty of any kind, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose, and non-infringement.
+
+The authors and contributors are **not liable** for any claim, damage, data loss, fire, equipment failure, personal injury, or other loss arising from the use of this software, whether in contract, tort, or otherwise.
+
+- The **battery’s own BMS hardware** remains the primary safety system.
+- This bridge is a community tool for monitoring and Venus OS / DVCC integration; it is **not** a certified Victron, Humsienk, or functional-safety product.
+- You are responsible for correct installation, configuration, and verification (e.g. current sign, voltage limits, charge/discharge limits) before relying on it in a live system.
+- Not affiliated with or endorsed by Victron Energy, Humsienk, or TDT/HiLink.
+
+By using this software you accept these terms.
