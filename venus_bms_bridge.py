@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
 Venus OS BLE BMS Bridge – Humsienk / TDT (HiLink)
-v1.0
+Version 1.0
 
-References:
-  - aiobmsble tdt_bms.py (Offsets, CRC, HiLink, MOSFET, 0x92)
-  - BMS_BLE-HA #717: 0x8D optional on some TDT devices
-  - dbus-serialbattery: Venus D-Bus paths, gettextcallback, DVCC
-  - Own BLE sniff: UUIDs, poll 0x8C/0x8D, HiLink auth
+Publishes a Humsienk (TDT/HiLink) lithium battery as
+com.victronenergy.battery.* on Venus OS over Bluetooth LE.
 
-No multi-pack support (by design).
+Protocol reference: aiobmsble tdt_bms.py
+Venus paths: dbus-serialbattery / Victron dbus docs
+
+Boot: start via /data/rc.local (see README.md). Do not rely on
+daemontools /service links on stock Venus OS images.
 """
 
 from __future__ import annotations
@@ -995,25 +996,7 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 
-# ─────────────────────────────────────────────────────────────────────
-# Installation (survives Venus firmware updates under /data):
-#
-#   cp venus_bms_bridge.py /data/etc/venus_bms_bridge.py && chmod +x $_
-#
-# Service:
-#   mkdir -p /data/etc/venus_bms_bridge/service/log
-#   printf '%s\n' '#!/bin/sh' 'exec 2>&1' 'exec /data/etc/venus_bms_bridge.py' \
-#     > /data/etc/venus_bms_bridge/service/run
-#   printf '%s\n' '#!/bin/sh' 'exec 2>&1' \
-#     'exec multilog t s25000 n4 /var/log/venus_bms_bridge' \
-#     > /data/etc/venus_bms_bridge/service/log/run
-#   chmod +x /data/etc/venus_bms_bridge/service/run \
-#            /data/etc/venus_bms_bridge/service/log/run
-#   ln -sf /data/etc/venus_bms_bridge/service /service/venus_bms_bridge
-#
-# Logs:  tail -F /var/log/venus_bms_bridge/current
-# Stop:  svc -d /service/venus_bms_bridge
-# Start: svc -u /service/venus_bms_bridge
-#
-# Optional fixed MAC:  MAC_ADDRESS = "C0:D6:3C:5B:A2:66"
-# ─────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Install: see README.md  |  Boot: /data/rc.local  |  Stop: pkill -f venus_bms
+# Optional fixed MAC: set MAC_ADDRESS below in the configuration section.
+# ---------------------------------------------------------------------------
