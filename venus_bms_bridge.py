@@ -27,11 +27,11 @@ def ensure_dependencies() -> None:
     try:
         import bleak  # noqa: F401
     except ImportError:
-        print("[Setup] 'bleak' missing – installing …")
+        log_info("[Setup] 'bleak' missing – installing …")
         subprocess.check_call(
             [sys.executable, "-m", "pip", "install", "--upgrade", "bleak"]
         )
-        print("[Setup] bleak installed.")
+        log_info("[Setup] bleak installed.")
 
 
 ensure_dependencies()
@@ -44,7 +44,7 @@ sys.path.insert(1, "/opt/victronenergy/dbus-systemcalc-py/ext/velib_python")
 try:
     from vedbus import VeDbusService
 except ImportError:
-    print("[Error] vedbus not found – is this running on Venus OS?")
+    log_error("[Error] vedbus not found – is this running on Venus OS?")
     sys.exit(1)
 
 # ═══════════════════════ Configuration (this pack type) ══════════════
@@ -81,6 +81,9 @@ SOC_LOW_PCT = 10.0
 MAX_CELLS = 32
 CELL_POS = 0x08
 
+# Logging: 0=quiet (errors/disconnects only), 1=normal, 2=verbose
+LOG_LEVEL = 0
+
 # aiobmsble: alternative command heads
 CMD_HEADS = (0x7E, 0x1E)
 
@@ -112,12 +115,12 @@ def frame_ok(data: bytes) -> bool:
     if data[1] not in (0x00, 0x04):
         return False
     if data[4] != 0:
-        print(f"[TDT] BMS frame error code: 0x{data[4]:02X}")
+        log_error(f"[TDT] BMS frame error code: 0x{data[4]:02X}")
         return False
     calc = _crc_modbus(data[:-3])
     recv = int.from_bytes(data[-3:-1], "big")
     if calc != recv:
-        print(f"[TDT] CRC mismatch calc={calc:04X} recv={recv:04X}")
+        log_debug(f"[TDT] CRC mismatch calc={calc:04X} recv={recv:04X}")
         return False
     return True
 
@@ -139,6 +142,21 @@ def build_init_commands(head: int = 0x7E) -> List[bytes]:
 
 shutdown_event = asyncio.Event()
 
+def log_error(msg: str) -> None:
+    """Always print serious problems and connection issues."""
+    print(msg, flush=True)
+
+
+def log_info(msg: str) -> None:
+    if LOG_LEVEL >= 1:
+        print(msg, flush=True)
+
+
+def log_debug(msg: str) -> None:
+    if LOG_LEVEL >= 2:
+        print(msg, flush=True)
+
+
 
 # ═══════════════════════ Discovery ════════════════════════════════════
 def _name_matches(name: Optional[str]) -> bool:
@@ -149,7 +167,7 @@ def _name_matches(name: Optional[str]) -> bool:
 
 
 async def discover_bms_mac() -> Optional[Tuple[str, str]]:
-    print(
+    log_info(
         f"[Scan] Looking for BMS ({', '.join(NAME_PREFIXES)}* / mfg {MANUFACTURER_IDS}) "
         f"{SCAN_TIMEOUT_S:.0f}s …"
     )
@@ -158,7 +176,7 @@ async def discover_bms_mac() -> Optional[Tuple[str, str]]:
             timeout=SCAN_TIMEOUT_S, return_adv=True
         )
     except Exception as e:
-        print(f"[Scan] Error: {e}")
+        log_error(f"[Scan] Error: {e}")
         return None
 
     candidates = []
@@ -171,17 +189,17 @@ async def discover_bms_mac() -> Optional[Tuple[str, str]]:
         if match:
             rssi = getattr(adv, "rssi", None) or getattr(dev, "rssi", None)
             candidates.append((addr, name or addr, rssi))
-            print(f"[Scan] Candidate: {name or '?'}  {addr}  RSSI={rssi}")
+            log_debug(f"[Scan] Candidate: {name or '?'}  {addr}  RSSI={rssi}")
 
     if not candidates:
-        print("[Scan] No matching device found.")
+        log_error("[Scan] No matching device found.")
         return None
 
     candidates.sort(
         key=lambda x: x[2] if x[2] is not None else -999, reverse=True
     )
     mac, name, _ = candidates[0]
-    print(f"[Scan] Selected: {name} @ {mac}")
+    log_info(f"[Scan] Selected: {name} @ {mac}")
     return mac, name
 
 
@@ -237,7 +255,7 @@ class BatteryDbusBridge:
         )
 
         self.service.add_path("/Mgmt/ProcessName", __file__)
-        self.service.add_path("/Mgmt/ProcessVersion", "7.4")
+        self.service.add_path("/Mgmt/ProcessVersion", "7.5")
         self.service.add_path("/Mgmt/Connection", "Bluetooth BLE TDT (auto)")
         self.service.add_path("/DeviceInstance", device_instance)
         self.service.add_path("/ProductId", 0xBA77)
@@ -392,11 +410,13 @@ class BatteryDbusBridge:
             self.service["/Alarms/BmsCable"] = 0
             self.service["/System/NrOfModulesOnline"] = 1
             self.service["/System/NrOfModulesOffline"] = 0
+            log_info(f"[Status] Connected Info={info!r}")
         else:
             self.service["/Alarms/BmsCable"] = 2
             self.service["/System/NrOfModulesOnline"] = 0
             self.service["/System/NrOfModulesOffline"] = 1
-        print(f"[Status] Connected={int(bool(connected))} Info={info!r}")
+            # Always log disconnects / link loss
+            log_error(f"[Status] Disconnected Info={info!r}")
 
     def set_connected(self, status: int) -> None:
         self.set_status(1, "Connected") if status else self.set_status(
@@ -573,7 +593,7 @@ class BatteryDbusBridge:
             else:
                 self.service["/Info/DischargeLimitation"] = None
 
-        print(
+        log_debug(
             f"[D-Bus] U={total_v:.2f}V I={current:+.1f}A SoC={soc:.0f}% "
             f"T={temp:.1f}°C cells={len(voltages)} "
             f"remain={self.latest_capacity_remain:.1f}Ah "
@@ -615,7 +635,7 @@ def _parse_8c(data: bytes, bridge: BatteryDbusBridge) -> None:
             )
             off += 2
         if len(voltages) != n_cells:
-            print(f"[Parse 8C] cells incomplete {len(voltages)}/{n_cells}")
+            log_error(f"[Parse 8C] cells incomplete {len(voltages)}/{n_cells}")
             return
 
         if off >= len(data) - 3:
@@ -633,7 +653,7 @@ def _parse_8c(data: bytes, bridge: BatteryDbusBridge) -> None:
         idx = n_cells + n_temps
         start = CELL_POS + idx * 2 + 2
         if start + 14 > len(data) - 3:
-            print(f"[Parse 8C] frame too short (start={start})")
+            log_debug(f"[Parse 8C] frame too short (start={start})")
             return
 
         raw_i = int.from_bytes(data[start : start + 2], "big")
@@ -677,7 +697,7 @@ def _parse_8c(data: bytes, bridge: BatteryDbusBridge) -> None:
 
         GLib.idle_add(bridge.commit_values)
     except Exception as e:
-        print(f"[Parse 8C] {e}")
+        log_error(f"[Parse 8C] {e}")
 
 
 def _parse_8d(data: bytes, bridge: BatteryDbusBridge) -> None:
@@ -704,12 +724,12 @@ def _parse_8d(data: bytes, bridge: BatteryDbusBridge) -> None:
             bridge.got_8d = True
 
         if problem:
-            print(
+            log_error(
                 f"[8D] problem=0x{problem:04X} MOS=0x{mosfets:02X} "
                 f"C={charge_fet} D={discharge_fet}"
             )
     except Exception as e:
-        print(f"[Parse 8D] {e}")
+        log_error(f"[Parse 8D] {e}")
 
 
 def _parse_92(data: bytes, bridge: BatteryDbusBridge) -> None:
@@ -725,7 +745,7 @@ def _parse_92(data: bytes, bridge: BatteryDbusBridge) -> None:
         sw = b2str(data[8:28])
         mfg = b2str(data[28:48])
         sn = b2str(data[48:68])
-        print(f"[Device] SW={sw!r} Mfg={mfg!r} SN={sn!r}")
+        log_info(f"[Device] SW={sw!r} Mfg={mfg!r} SN={sn!r}")
 
         if sw:
             bridge.service["/FirmwareVersion"] = sw
@@ -739,7 +759,7 @@ def _parse_92(data: bytes, bridge: BatteryDbusBridge) -> None:
         if sn:
             bridge.service["/Serial"] = sn
     except Exception as e:
-        print(f"[Parse 92] {e}")
+        log_error(f"[Parse 92] {e}")
 
 
 # ═══════════════════════ BLE ══════════════════════════════════════════
@@ -788,7 +808,7 @@ def _run_cmd(cmd: list, timeout: float = 8.0) -> str:
 def ble_cleanup(mac: str) -> None:
     """Drop stale BlueZ links – common reason only a reboot seemed to help."""
     mac_u = mac.upper()
-    print(f"[BLE-Cleanup] disconnect {mac_u} …")
+    log_info(f"[BLE-Cleanup] disconnect {mac_u} …")
     _run_cmd(["bluetoothctl", "disconnect", mac_u], timeout=5)
     time.sleep(0.4)
     # device kurz entfernen und neu scannen lassen (optional, harmlos wenn unbekannt)
@@ -798,26 +818,26 @@ def ble_cleanup(mac: str) -> None:
 
 def ble_adapter_reset() -> None:
     """Harder recovery: cycle the HCI adapter after repeated failures."""
-    print("[BLE-Cleanup] Adapter reset hci0 …")
+    log_error("[BLE-Cleanup] Adapter reset hci0 …")
     for c in (
         ["hciconfig", "hci0", "down"],
         ["hciconfig", "hci0", "up"],
         ["bluetoothctl", "power", "on"],
     ):
-        print(f"  {' '.join(c)} -> {_run_cmd(c, timeout=6)[:80]}")
+        log_debug(f"  {' '.join(c)} -> {_run_cmd(c, timeout=6)[:80]}")
         time.sleep(0.6)
     time.sleep(1.5)
 
 
 async def resolve_mac() -> str:
     if MAC_ADDRESS and len(MAC_ADDRESS) >= 12:
-        print(f"[Config] Fixed MAC: {MAC_ADDRESS}")
+        log_info(f"[Config] Fixed MAC: {MAC_ADDRESS}")
         return MAC_ADDRESS
     while not shutdown_event.is_set():
         result = await discover_bms_mac()
         if result:
             return result[0]
-        print(f"[Scan] Retry in {RESCAN_INTERVAL_S}s …")
+        log_error(f"[Scan] Retry in {RESCAN_INTERVAL_S}s …")
         for _ in range(RESCAN_INTERVAL_S):
             if shutdown_event.is_set():
                 break
@@ -835,11 +855,11 @@ async def bleak_worker(bridge: BatteryDbusBridge) -> None:
         if frame:
             parse_tdt_frame(frame, bridge)
 
-    print("Bluetooth worker started …")
+    log_info("Bluetooth worker started …")
     GLib.idle_add(bridge.set_status, 0, "Scanning")
     mac = await resolve_mac()
     if not mac:
-        print("[Error] No MAC – stopping worker.")
+        log_error("[Error] No MAC – stopping worker.")
         return
 
     bridge.service["/Serial"] = mac.replace(":", "")
@@ -854,7 +874,7 @@ async def bleak_worker(bridge: BatteryDbusBridge) -> None:
             # generous timeout; BlueZ on Venus can be slow
             async with BleakClient(mac, timeout=30.0) as client:
                 fail_count = 0
-                print(f"BLE connected ({mac}) – auth + init …")
+                log_info(f"BLE connected ({mac}) – auth + init …")
                 GLib.idle_add(bridge.set_status, 0, "Connecting")
 
                 await client.start_notify(UUID_NOTIFY, on_notify)
@@ -869,13 +889,13 @@ async def bleak_worker(bridge: BatteryDbusBridge) -> None:
                     try:
                         ret = await client.read_gatt_char(UUID_AUTH)
                         if ret and ret[0] != 0x01:
-                            print(f"[Auth] Unlock: 0x{ret[0]:02X}")
+                            log_error(f"[Auth] Unlock: 0x{ret[0]:02X}")
                         else:
-                            print("[Auth] HiLink OK")
+                            log_debug("[Auth] HiLink OK")
                     except Exception:
-                        print("[Auth] HiLink written (no readback)")
+                        log_debug("[Auth] HiLink written (no readback)")
                 except Exception as e:
-                    print(f"[Auth] {e} – continuing")
+                    log_error(f"[Auth] {e} – continuing")
                 await asyncio.sleep(0.4)
 
                 GLib.idle_add(bridge.set_status, 0, "Initializing")
@@ -890,7 +910,7 @@ async def bleak_worker(bridge: BatteryDbusBridge) -> None:
                     break  # erster Head reicht; bei Timeout im Poll wechseln
 
                 GLib.idle_add(bridge.set_status, 1, "Connected")
-                print(
+                log_info(
                     f"Polling active (every {POLL_INTERVAL_S}s, head=0x{cmd_head:02X}) …"
                 )
 
@@ -914,11 +934,11 @@ async def bleak_worker(bridge: BatteryDbusBridge) -> None:
                         # nach 3 Zyklen ohne Daten: alternativen Head versuchen
                         if no_data_cycles == 3 and cmd_head == 0x7E:
                             cmd_head = 0x1E
-                            print("[Poll] Switching command head → 0x1E")
+                            log_error("[Poll] Switching command head → 0x1E")
                         elif no_data_cycles == 6 and cmd_head == 0x1E:
                             cmd_head = 0x7E
                             no_data_cycles = 0
-                            print("[Poll] Switching command head → 0x7E")
+                            log_error("[Poll] Switching command head → 0x7E")
 
                     for _ in range(POLL_INTERVAL_S):
                         if shutdown_event.is_set():
@@ -927,13 +947,13 @@ async def bleak_worker(bridge: BatteryDbusBridge) -> None:
 
                 if client.is_connected:
                     await client.disconnect()
-                print("BLE disconnected.")
+                log_error("BLE disconnected.")
 
         except Exception as e:
             if not shutdown_event.is_set():
                 fail_count += 1
                 err = str(e).strip() or type(e).__name__
-                print(f"BLE error [{fail_count}]: {type(e).__name__}: {err}")
+                log_error(f"BLE error [{fail_count}]: {type(e).__name__}: {err}")
                 GLib.idle_add(bridge.set_connected, 0)
 
                 # Clear stale connection
@@ -954,7 +974,7 @@ async def bleak_worker(bridge: BatteryDbusBridge) -> None:
                             await asyncio.to_thread(ble_cleanup, mac)
 
                 wait_s = min(15 + fail_count * 5, 60)
-                print(f"Retry in {wait_s}s …")
+                log_error(f"Retry in {wait_s}s …")
                 for _ in range(wait_s):
                     if shutdown_event.is_set():
                         break
@@ -967,14 +987,14 @@ def stale_watchdog(bridge: BatteryDbusBridge) -> bool:
         and (time.time() - bridge.last_packet_time) > STALE_TIMEOUT_S
     ):
         if bridge.service["/Connected"] == 1:
-            print("[Watchdog] Timeout – Connected=0")
+            log_error("[Watchdog] Timeout – Connected=0")
             bridge.set_connected(0)
     return True
 
 
 def main() -> None:
     DBusGMainLoop(set_as_default=True)
-    print("Venus OS Humsienk/TDT BMS Bridge v7.4")
+    log_info("Venus OS Humsienk/TDT BMS Bridge v7.5")
     bridge = BatteryDbusBridge(DEVICE_INSTANCE)
 
     t = threading.Thread(
@@ -987,10 +1007,10 @@ def main() -> None:
     try:
         loop.run()
     except KeyboardInterrupt:
-        print("\nShutdown …")
+        log_info("\nShutdown …")
         shutdown_event.set()
         time.sleep(1.5)
-        print("Stopped.")
+        log_info("Stopped.")
 
 
 if __name__ == "__main__":
