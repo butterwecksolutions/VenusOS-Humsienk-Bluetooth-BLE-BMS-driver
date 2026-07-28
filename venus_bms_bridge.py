@@ -407,16 +407,24 @@ class BatteryDbusBridge:
         self.service["/Connected"] = 1 if connected else 0
         self.service["/ConnectionInformation"] = info
         if connected:
+            self.ever_connected = True
             self.service["/Alarms/BmsCable"] = 0
             self.service["/System/NrOfModulesOnline"] = 1
             self.service["/System/NrOfModulesOffline"] = 0
             log_info(f"[Status] Connected Info={info!r}")
         else:
-            self.service["/Alarms/BmsCable"] = 2
-            self.service["/System/NrOfModulesOnline"] = 0
-            self.service["/System/NrOfModulesOffline"] = 1
-            # Always log disconnects / link loss
-            log_error(f"[Status] Disconnected Info={info!r}")
+        # Alarm nur bei echtem Verbindungsverlust (war schon mal verbunden),
+        # nicht beim ganz normalen Erstverbindungsaufbau (Scanning/Connecting/
+        # Authenticating/Initializing) - das würde sonst bei jedem Boot einen
+        # falschen Alarm auslösen, bevor die erste BLE-Verbindung überhaupt
+        # zustande gekommen ist.
+            if self.ever_connected:
+                self.service["/Alarms/BmsCable"] = 2
+                self.service["/System/NrOfModulesOnline"] = 0
+                self.service["/System/NrOfModulesOffline"] = 1
+                log_error(f"[Status] Disconnected Info={info!r}")
+            else:
+                log_info(f"[Status] Not yet connected Info={info!r}")
 
     def set_connected(self, status: int) -> None:
         self.set_status(1, "Connected") if status else self.set_status(
