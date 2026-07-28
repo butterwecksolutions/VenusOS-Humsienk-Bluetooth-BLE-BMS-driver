@@ -1,4 +1,7 @@
 # Venus OS BLE BMS Bridge – Humsienk / TDT (HiLink)
+<img width="40%" alt="grafik" src="https://github.com/user-attachments/assets/2deb593c-4ea6-4469-815f-605fff1f472b" />
+<img width="40%" alt="grafik" src="https://github.com/user-attachments/assets/144319b7-ecf6-4160-9030-997a71c3584a" />
+
 
 Python driver that connects a **Humsienk** (or compatible **TDT / HiLink**) LiFePO4 battery over **Bluetooth LE** and publishes a full `com.victronenergy.battery.*` service on **Venus OS** (Cerbo GX, Raspberry Pi, etc.).
 
