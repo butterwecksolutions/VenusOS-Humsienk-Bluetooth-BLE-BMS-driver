@@ -245,6 +245,7 @@ class BatteryDbusBridge:
     def __init__(self, device_instance: int = DEVICE_INSTANCE):
         self.lock = threading.Lock()
         self.last_packet_time = 0.0
+        self.ever_connected = False
         self.cell_count = CELL_COUNT_DEFAULT
         self.n_temps = 0
         self.got_8d = False
