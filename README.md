@@ -2,183 +2,143 @@
 <img width="40%" alt="grafik" src="https://github.com/user-attachments/assets/2deb593c-4ea6-4469-815f-605fff1f472b" />
 <img width="40%" alt="grafik" src="https://github.com/user-attachments/assets/144319b7-ecf6-4160-9030-997a71c3584a" />
 
+Bluetooth LE bridge that exposes a **Humsienk** (or compatible **TDT / HiLink**) battery as a native Venus OS battery service:
 
-Python driver that connects a **Humsienk** (or compatible **TDT / HiLink**) LiFePO4 battery over **Bluetooth LE** and publishes a full `com.victronenergy.battery.*` service on **Venus OS** (Cerbo GX, Raspberry Pi, etc.).
+```text
+com.victronenergy.battery.bt_bms_512
+```
 
-The battery appears in the Remote Console like a native Victron battery monitor, including cell voltages, DVCC limits, alarms, SoC, and Time-to-Go.
+Tested with packs that advertise names such as `HS…` and speak the TDT framed protocol (`0x7E … 0x0D`) over GATT characteristics `fff1` / `fff2` / `fffa`.
 
 ---
 
 ## Features
 
-| Feature | Details |
-|--------|---------|
-| **Auto discovery** | Finds the pack by BLE name (`HS*`, `ECO*`, `DCH*`, `TDT*`) or manufacturer ID `54976` – no MAC required |
-| **HiLink auth** | Writes `HiLink` to the auth characteristic (same as the vendor app) |
-| **TDT protocol** | Frame format `7E … CRC 0D`, commands `0x8C` / `0x8D` / `0x92` (aligned with [aiobmsble](https://github.com/patman15/aiobmsble) `tdt_bms.py`) |
-| **Venus integration** | Voltage, current, power, SoC, SoH, capacity, all cell voltages, temps, TimeToGo, SystemSwitch |
-| **DVCC** | `/Info/MaxChargeVoltage`, `/Info/MaxChargeCurrent`, `/Info/MaxDischargeCurrent`, `/Io/AllowToCharge`, `/Io/AllowToDischarge` |
-| **Alarms** | Cell high/low, pack high/low, imbalance, SoC, temperature, over-current, BMS cable, internal failure |
-| **Resilience** | Stale BlueZ cleanup, HCI adapter reset after repeated failures, command-head fallback `0x7E` / `0x1E` |
-| **Dependencies** | Installs `bleak` via `pip` automatically if missing |
+- Auto-discovery of the BMS MAC (name prefixes `HS`, `ECO`, `DCH`, `TDT` or manufacturer ID `54976`)
+- Optional fixed `MAC_ADDRESS` if auto-scan is not desired
+- HiLink unlock (`fffa`), live telemetry `0x8C`, status `0x8D` (optional), device info `0x92`
+- CRC-16/Modbus frame checks
+- Full cell voltages, temperatures, SoC/SoH, current, power, capacity
+- DVCC-oriented paths: `/Info/MaxCharge*`, `/Io/AllowToCharge|Discharge`, alarms
+- Correct Victron `/State` values (`9` = Running — **not** `0`, which means Initializing)
+- Stale BlueZ cleanup + HCI reset after repeated connect failures
+- Auto-install of `bleak` via pip if missing
 
-**Not supported (by design):** multiple packs on one process instance.
+**Not supported:** multi-pack aggregation (one bridge process = one battery).
 
 ---
 
 ## Requirements
 
-- Venus OS (official image or Large) with Bluetooth
-- Python 3 with GLib / D-Bus (`vedbus` from Venus)
-- A Humsienk / TDT HiLink BLE BMS (service UUID `fff0`)
-
-Default pack profile in the script (adjust constants as needed):
-
-- 16 cells, about 48 V, 314 Ah
-- Charge limit 58.4 V / 100 A, discharge 100 A, low voltage 44.8 V
+- Venus OS (Cerbo, Venus GX, Raspberry Pi image, etc.) with Bluetooth
+- Python 3 with `gi` / D-Bus (stock on Venus)
+- Network once for `pip install bleak` (or install offline)
 
 ---
 
-## Quick install
+## Installation (reboot-safe)
 
-```bash
+`/data` survives Venus firmware updates. Prefer **`/data/rc.local`** over daemontools `/service` links.
+
+### 1. Copy the script
+
+```sh
 cp venus_bms_bridge.py /data/etc/venus_bms_bridge.py
 chmod +x /data/etc/venus_bms_bridge.py
+mkdir -p /data/log
 ```
 
-Run once in the foreground to verify:
+### 2. Enable start on boot
 
-```bash
-/data/etc/venus_bms_bridge.py
+```sh
+touch /data/rc.local
+chmod +x /data/rc.local
 ```
 
-You should see scan, connect, auth, polling, and the battery in the device list (e.g. `48V314AH`).
+Edit `/data/rc.local` so it contains at least:
 
-### Optional: fixed MAC
-
-If auto-discovery is unreliable, set at the top of the script:
-
-```python
-MAC_ADDRESS = "C0:D6:3C:5B:A2:66"
-```
-
----
-
-## Run as a service (daemontools)
-
-Survives reboots. Files under `/data` survive Venus firmware updates.
-
-```bash
-mkdir -p /data/etc/venus_bms_bridge/service/log
-
-cat > /data/etc/venus_bms_bridge/service/run << 'EOF'
+```sh
 #!/bin/sh
-exec 2>&1
-exec /data/etc/venus_bms_bridge.py
-EOF
-
-cat > /data/etc/venus_bms_bridge/service/log/run << 'EOF'
-#!/bin/sh
-exec 2>&1
-exec multilog t s25000 n4 /var/log/venus_bms_bridge
-EOF
-
-chmod +x /data/etc/venus_bms_bridge.py \
-         /data/etc/venus_bms_bridge/service/run \
-         /data/etc/venus_bms_bridge/service/log/run
-
-ln -sf /data/etc/venus_bms_bridge/service /service/venus_bms_bridge
+# Wait for Bluetooth and D-Bus after boot
+sleep 20
+/data/etc/venus_bms_bridge.py >> /data/log/venus_bms_bridge.log 2>&1 &
+exit 0
 ```
 
-| Action | Command |
-|--------|---------|
-| Logs | `tail -F /var/log/venus_bms_bridge/current` |
-| Stop | `svc -d /service/venus_bms_bridge` |
-| Start | `svc -u /service/venus_bms_bridge` |
-| Restart | `svc -t /service/venus_bms_bridge` |
+If `rc.local` already exists, add the `sleep`/`venus_bms_bridge` lines **before** `exit 0`.
+
+### 3. Start without rebooting
+
+```sh
+/data/etc/venus_bms_bridge.py >> /data/log/venus_bms_bridge.log 2>&1 &
+```
+
+### 4. Logs and stop
+
+```sh
+tail -F /data/log/venus_bms_bridge.log
+pkill -f venus_bms_bridge.py
+```
 
 ---
 
 ## Configuration
 
-Near the top of `venus_bms_bridge.py`:
+Edit the constants at the top of `venus_bms_bridge.py`:
 
-| Constant | Default | Meaning |
+| Variable | Default | Meaning |
 |----------|---------|---------|
-| `MAC_ADDRESS` | `""` | Empty = auto-scan |
-| `NAME_PREFIXES` | `HS`, `ECO`, `DCH`, `TDT` | BLE name prefixes |
-| `CAPACITY_AH_DEFAULT` | `314.0` | Nominal capacity |
-| `MAX_CHARGE_VOLTAGE` | `58.4` | DVCC charge voltage limit |
-| `BATTERY_LOW_VOLTAGE` | `44.8` | Low voltage / DVCC floor |
-| `MAX_CHARGE_CURRENT` | `100.0` | DVCC charge current limit |
-| `MAX_DISCHARGE_CURRENT` | `100.0` | DVCC discharge current limit |
-| `DEVICE_INSTANCE` | `512` | D-Bus instance (`bt_bms_512`) |
+| `MAC_ADDRESS` | `""` | Empty = scan; or set e.g. `"C0:D6:3C:5B:A2:66"` |
+| `CAPACITY_AH_DEFAULT` | `314.0` | Fallback pack capacity (Ah) |
+| `MAX_CHARGE_VOLTAGE` | `58.4` | DVCC charge voltage limit (V) |
+| `BATTERY_LOW_VOLTAGE` | `44.8` | Low voltage threshold (V) |
+| `MAX_CHARGE_CURRENT` | `100.0` | DVCC charge current limit (A) |
+| `MAX_DISCHARGE_CURRENT` | `100.0` | DVCC discharge current limit (A) |
+| `DEVICE_INSTANCE` | `512` | Venus device instance |
+| `CUSTOM_NAME` | `"48V314AH"` | Name shown in the GUI |
 | `POLL_INTERVAL_S` | `2` | Seconds between poll cycles |
-| `CELL_HIGH_V` / `CELL_LOW_V` | `3.65` / `2.80` | Per-cell alarm thresholds |
+
+Cell count and remaining capacity are taken from the BMS when available.
 
 ---
 
-## D-Bus paths (selection)
+## Verify on the GX
 
-| Path | Meaning |
-|------|---------|
-| `/Soc`, `/Soh` | State of charge / health |
-| `/Dc/0/Voltage`, `/Current`, `/Power`, `/Temperature` | Pack DC values |
-| `/Voltages/Cell1` … `/CellN`, `/Sum`, `/Diff` | Cell data |
-| `/Capacity`, `/InstalledCapacity`, `/ConsumedAmphours` | Ah |
-| `/TimeToGo` | Seconds remaining while discharging |
-| `/State` | Lynx enum: **9 = Running**, 10 = Error, 14 = Standby (0–8 = Initializing) |
-| `/SystemSwitch` | 1 = On |
-| `/Info/MaxChargeVoltage`, `/MaxChargeCurrent`, `/MaxDischargeCurrent` | DVCC |
-| `/Io/AllowToCharge`, `/AllowToDischarge` | Policy for the GX |
-| `/Alarms/*` | 0 = OK, 2 = Alarm |
-
-Check from SSH:
-
-```bash
+```sh
 dbus -y com.victronenergy.battery.bt_bms_512 /Connected GetValue
 dbus -y com.victronenergy.battery.bt_bms_512 /State GetValue
 dbus -y com.victronenergy.battery.bt_bms_512 /Soc GetValue
 dbus -y com.victronenergy.battery.bt_bms_512 /Dc/0/Current GetValue
 ```
 
----
+Expected when online:
 
-## Protocol notes
+- `/Connected` = `1`
+- `/State` = `9` (Running) or `14` (Standby)
+- `/Soc`, voltage, current updating every few seconds
 
-- **GATT:** notify `fff1`, write `fff2`, auth `fffa`
-- **Auth:** write ASCII `HiLink`
-- **0x8C:** live data (cells, temps, current, pack V, remain Ah, cycles, SoC)
-- **0x8D:** optional status (MOSFET bits, `problem_code`); some firmwares never answer
-- **0x92:** software / manufacturer / serial strings
-- Current formula follows aiobmsble: `(raw & 0x3FFF) / 10`, sign from bit 15. **Verify once** against a shunt; invert in `_parse_8c` if needed.
-
-Safety-critical protection (cell UVP/OVP, over-current, FET cut-off) lives **inside the BMS hardware**. This driver is a monitoring and DVCC limit source, not a replacement for the BMS.
+In Remote Console the battery should appear under device list (e.g. custom name `48V314AH`).
 
 ---
 
-## Troubleshooting
+## Safety notes
 
-| Symptom | What to try |
-|---------|-------------|
-| `State` stuck on **Initializing** | `/State` must be **9** (Running), not 0 – fixed in v7.3+ |
-| Connect fails until reboot | v7.4 runs `bluetoothctl disconnect/remove` and periodic HCI reset |
-| No units (V/A) in GUI | Use latest script with `gettextcallback` on numeric paths |
-| Wrong current sign | Flip sign in `_parse_8c` after comparing to a shunt |
-| `bleak` missing after OS update | Script reinstalls on start, or run `pip3 install bleak` |
+- The **hardware BMS** remains the primary protection layer.
+- This driver supplies monitoring and DVCC *limits* to Venus; it is not a certified Victron BMS product.
+- Verify current sign/scale against a shunt or the vendor app once.
+- TDT `problem_code` bit definitions are not published; any non-zero value raises `/Alarms/InternalFailure`.
 
 ---
 
-## Credits and references
+## References
 
-- [patman15/aiobmsble](https://github.com/patman15/aiobmsble) – TDT BLE implementation
-- [mr-manuel/venus-os_dbus-serialbattery](https://github.com/mr-manuel/venus-os_dbus-serialbattery) – Venus battery path conventions
-- [Victron dbus wiki](https://github.com/victronenergy/venus/wiki/dbus) / [dbus_modbustcp](https://github.com/victronenergy/dbus_modbustcp) – `/State` Lynx enum
+- [aiobmsble `tdt_bms.py`](https://github.com/patman15/aiobmsble)
+- [dbus-serialbattery](https://github.com/mr-manuel/venus-os_dbus-serialbattery)
+- [Victron dbus wiki](https://github.com/victronenergy/venus/wiki/dbus)
+- Victron `dbus_modbustcp` `attributes.csv` (`/State` Lynx enum)
 
 ---
 
 ## License
 
-Use and adapt freely for personal and community Venus OS projects.
-
-**No warranty.** Battery systems can cause fire or equipment damage. Use at your own risk.
+Use and modify at your own risk. Not affiliated with Victron Energy or Humsienk.
