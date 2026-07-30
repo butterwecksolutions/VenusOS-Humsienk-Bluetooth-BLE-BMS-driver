@@ -136,6 +136,20 @@ Default `LOG_LEVEL = 0` keeps the log almost empty during normal operation.
 tail -F /data/log/venus_bms_bridge.log
 ```
 
+## Troubleshooting & Signal Issues (The Network Cable Trick)
+
+If the script gets stuck in a loop of TimeoutError or BleakDeviceNotFoundError upon startup, the Bluetooth signal (RSSI)
+from the battery's internal BMS is likely heavily shielded by the metal casing.
+
+    The Fix (Parasitic Antenna): Plug a standard, unshielded RJ45 network cable into the battery's RS485/CAN port.
+    The other end of the cable remains completely unplugged.
+
+    Why it works: The unshielded cable connects to the port's ground and acts as a parasitic radiator (a passive antenna).
+    It captures the high-frequency 2.4 GHz Bluetooth waves trapped inside the metal case and broadcasts them outside.
+    In testing, this simple trick improved borderline signals (e.g., from -90 dBm to a perfectly stable -83 dBm),
+    instantly resolving timeout issues and enabling a stable connection.
+
+
 ## Safety notes
 
 - The **hardware BMS** remains the primary protection layer.
