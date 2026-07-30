@@ -414,11 +414,6 @@ class BatteryDbusBridge:
             self.service["/System/NrOfModulesOffline"] = 0
             log_info(f"[Status] Connected Info={info!r}")
         else:
-        # Alarm nur bei echtem Verbindungsverlust (war schon mal verbunden),
-        # nicht beim ganz normalen Erstverbindungsaufbau (Scanning/Connecting/
-        # Authenticating/Initializing) - das würde sonst bei jedem Boot einen
-        # falschen Alarm auslösen, bevor die erste BLE-Verbindung überhaupt
-        # zustande gekommen ist.
             if self.ever_connected:
                 self.service["/Alarms/BmsCable"] = 2
                 self.service["/System/NrOfModulesOnline"] = 0
@@ -541,18 +536,13 @@ class BatteryDbusBridge:
             if self.latest_cycles is not None:
                 self.service["/History/ChargeCycles"] = self.latest_cycles
 
-            # problem_code bits are undocumented → any non-zero = InternalFailure
             self.service["/Alarms/InternalFailure"] = 2 if problem else 0
             self.service["/ErrorCode"] = problem
 
-            # Victron battery /State (Lynx enum from dbus_modbustcp):
-            # 0-8 = Initializing…, 9 = Running, 10 = Error,
-            # 12 = Shutdown, 14 = Standby
-            # Do NOT use 0/1/2 for idle/charge/discharge – 0 means "Initializing"!
             if problem or not self.charge_fet and not self.discharge_fet:
                 self.service["/State"] = 10  # Error
             elif abs(current) < 0.3 and soc >= 99:
-                self.service["/State"] = 14  # Standby (voll, kein Strom)
+                self.service["/State"] = 14  # Standby
             else:
                 self.service["/State"] = 9   # Running
 
@@ -626,7 +616,6 @@ def parse_tdt_frame(data: bytes, bridge: BatteryDbusBridge) -> None:
 
 
 def _parse_8c(data: bytes, bridge: BatteryDbusBridge) -> None:
-    """aiobmsble tdt_bms._async_update – 0x8C-Layout."""
     try:
         if len(data) < CELL_POS + 3:
             return
@@ -679,7 +668,6 @@ def _parse_8c(data: bytes, bridge: BatteryDbusBridge) -> None:
             est = remain / (soc / 100.0)
             if 50 < est < 2000:
                 design = est
-        # keep configured default if estimate is implausible
         if abs(design - CAPACITY_AH_DEFAULT) > CAPACITY_AH_DEFAULT * 0.4:
             design = CAPACITY_AH_DEFAULT
 
@@ -710,7 +698,6 @@ def _parse_8c(data: bytes, bridge: BatteryDbusBridge) -> None:
 
 
 def _parse_8d(data: bytes, bridge: BatteryDbusBridge) -> None:
-    """Optional – aiobmsble offsets; some devices never send 0x8D."""
     try:
         with bridge.lock:
             n_cells = bridge.cell_count
@@ -815,27 +802,36 @@ def _run_cmd(cmd: list, timeout: float = 8.0) -> str:
 
 
 def ble_cleanup(mac: str) -> None:
-    """Drop stale BlueZ links – common reason only a reboot seemed to help."""
+    """Bereinigt nur dieses spezifische BMS-Gerät aus dem Cache, ohne andere zu stören."""
     mac_u = mac.upper()
-    log_info(f"[BLE-Cleanup] disconnect {mac_u} …")
+    log_info(f"[BLE-Cleanup] Bereinige {mac_u} gezielt aus dem BlueZ-Cache...")
     _run_cmd(["bluetoothctl", "disconnect", mac_u], timeout=5)
     time.sleep(0.4)
-    # device kurz entfernen und neu scannen lassen (optional, harmlos wenn unbekannt)
     _run_cmd(["bluetoothctl", "remove", mac_u], timeout=5)
     time.sleep(0.3)
 
 
 def ble_adapter_reset() -> None:
-    """Harder recovery: cycle the HCI adapter after repeated failures."""
-    log_error("[BLE-Cleanup] Adapter reset hci0 …")
+    """Sanfte Recovery: Stellt sicher, dass Bluetooth aktiv ist, ohne hci0 abzuschalten."""
+    log_error("[BLE-Cleanup] Überprüfe Bluetooth-Status (ohne hci0 down) …")
     for c in (
-        ["hciconfig", "hci0", "down"],
-        ["hciconfig", "hci0", "up"],
+        ["rfkill", "unblock", "bluetooth"],
         ["bluetoothctl", "power", "on"],
     ):
         log_debug(f"  {' '.join(c)} -> {_run_cmd(c, timeout=6)[:80]}")
         time.sleep(0.6)
     time.sleep(1.5)
+
+
+def ble_initial_setup() -> None:
+    """Bereitet Bluetooth vor, ohne den Dienst komplett neu zu starten (schont andere Geräte)."""
+    log_info("[Init] Entsperre und aktiviere Bluetooth-Adapter...")
+    try:
+        subprocess.run(["rfkill", "unblock", "bluetooth"], check=False)
+        subprocess.run(["bluetoothctl", "power", "on"], check=False, stdout=subprocess.DEVNULL)
+        log_info("[Init] Bluetooth ist bereit.")
+    except Exception as e:
+        log_error(f"[Init] Fehler bei der Initialisierung: {e}")
 
 
 async def resolve_mac() -> str:
@@ -880,7 +876,6 @@ async def bleak_worker(bridge: BatteryDbusBridge) -> None:
     while not shutdown_event.is_set():
         try:
             GLib.idle_add(bridge.set_status, 0, "Connecting")
-            # generous timeout; BlueZ on Venus can be slow
             async with BleakClient(mac, timeout=30.0) as client:
                 fail_count = 0
                 log_info(f"BLE connected ({mac}) – auth + init …")
@@ -908,7 +903,6 @@ async def bleak_worker(bridge: BatteryDbusBridge) -> None:
                 await asyncio.sleep(0.4)
 
                 GLib.idle_add(bridge.set_status, 0, "Initializing")
-                # Command head 0x7E, fallback 0x1E (aiobmsble)
                 for head in CMD_HEADS:
                     cmd_head = head
                     for cmd in build_init_commands(head):
@@ -916,7 +910,7 @@ async def bleak_worker(bridge: BatteryDbusBridge) -> None:
                             UUID_WRITE, cmd, response=False
                         )
                         await asyncio.sleep(0.4)
-                    break  # erster Head reicht; bei Timeout im Poll wechseln
+                    break 
 
                 GLib.idle_add(bridge.set_status, 1, "Connected")
                 log_info(
@@ -940,7 +934,6 @@ async def bleak_worker(bridge: BatteryDbusBridge) -> None:
                         no_data_cycles = 0
                     else:
                         no_data_cycles += 1
-                        # nach 3 Zyklen ohne Daten: alternativen Head versuchen
                         if no_data_cycles == 3 and cmd_head == 0x7E:
                             cmd_head = 0x1E
                             log_error("[Poll] Switching command head → 0x1E")
@@ -965,13 +958,12 @@ async def bleak_worker(bridge: BatteryDbusBridge) -> None:
                 log_error(f"BLE error [{fail_count}]: {type(e).__name__}: {err}")
                 GLib.idle_add(bridge.set_connected, 0)
 
-                # Clear stale connection
+                # Clear stale connection (nur dieses Gerät)
                 await asyncio.to_thread(ble_cleanup, mac)
 
-                # Reset adapter after every 3 failures
                 if fail_count >= 3 and fail_count % 3 == 0:
+                    # Führt jetzt die sanfte Recovery aus anstatt hci0 lahmzulegen
                     await asyncio.to_thread(ble_adapter_reset)
-                    # rescan after adapter reset
                     if not MAC_ADDRESS:
                         found = await discover_bms_mac()
                         if found:
@@ -1004,6 +996,10 @@ def stale_watchdog(bridge: BatteryDbusBridge) -> bool:
 def main() -> None:
     DBusGMainLoop(set_as_default=True)
     log_info("Venus OS Humsienk/TDT BMS Bridge v7.5")
+    
+    # NEU: Sanfte Bluetooth-Initialisierung ausführen, um Cache/Locks zu beheben
+    ble_initial_setup()
+    
     bridge = BatteryDbusBridge(DEVICE_INSTANCE)
 
     t = threading.Thread(
@@ -1024,8 +1020,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-# ---------------------------------------------------------------------------
-# Install: see README.md  |  Boot: /data/rc.local  |  Stop: pkill -f venus_bms
-# Optional fixed MAC: set MAC_ADDRESS below in the configuration section.
-# ---------------------------------------------------------------------------
